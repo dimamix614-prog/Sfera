@@ -17,7 +17,7 @@ const now=()=>Date.now(),grp=a=>a>=18?1:0,q1=(s,...a)=>db.prepare(s).get(...a),q
 const role=u=>u.email===OWNER&&u.ver?'owner':u.role; // владелец только по ПОДТВЕРЖДЁННОМУ email, проверка на сервере
 const A=express(),srv=http.createServer(A);A.use(express.json({limit:'600kb'}));
 A.use((q,s,n)=>{s.set({'Access-Control-Allow-Origin':process.env.ORIGIN||'*','Access-Control-Allow-Headers':'Content-Type,Authorization','Access-Control-Allow-Methods':'GET,POST,DELETE,OPTIONS'});q.method==='OPTIONS'?s.end():n()});
-const auth=(q,s,n)=>{try{const p=jwt.verify((q.headers.authorization||'').slice(7),SECRET),u=q1('select * from users where id=?',p.id);if(!u||u.ban)return s.status(401).json({e:'Войдите заново'});u.role=role(u);q.u=u;run('update users set seen=? where id=?',now(),u.id);n()}catch{s.status(401).json({e:'Войдите заново'})}};
+const auth=(q,s,n)=>{try{const p=jwt.verify((q.headers.authorization||'').slice(7),SECRET),u=q1('select * from users where id=?',p.id);if(!u||u.ban||(u.age<18&&u.email!==OWNER))return s.status(401).json({e:'Войдите заново'});u.role=role(u);q.u=u;run('update users set seen=? where id=?',now(),u.id);n()}catch{s.status(401).json({e:'Войдите заново'})}};
 const need=(...r)=>(q,s,n)=>r.includes(q.u.role)?n():s.status(403).json({e:'Нет доступа'});
 const C=new Map(),push=(id,o)=>(C.get(id)||[]).forEach(w=>w.send(JSON.stringify(o)));
 const blocked=(a,b)=>q1('select 1 x from blk where (a=? and b=?)or(a=? and b=?)',a,b,b,a);
@@ -26,7 +26,7 @@ const logA=(a,act,t)=>run('insert into log(actor,act,tg,t)values(?,?,?,?)',a,act
 const lim=(m,x)=>rl({windowMs:m*6e4,max:x,message:{e:'Слишком много попыток, подождите'}});
 
 A.post('/api/register',lim(60,10),(q,s)=>{const{email,password,age}=q.body,e=String(email||'').toLowerCase().trim();
- if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)||String(password||'').length<8||!(age>=13&&age<=100))return s.status(400).json({e:'Проверьте email, пароль (от 8 символов) и возраст (от 13)'});
+ if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)||String(password||'').length<8||!(age>=18&&age<=100))return s.status(400).json({e:'Регистрация только с 18 лет. Проверьте email и пароль (от 8 символов)'});
  if(q1('select 1 x from users where email=?',e))return s.status(409).json({e:'Этот email уже зарегистрирован'});
  const vt=crypto.randomBytes(24).toString('hex');const auto=!mail&&e!==OWNER?1:0; // без SMTP обычные пользователи подтверждаются сразу; email создателя — только по ссылке из логов
  run('insert into users(email,hash,age,ver,vt,created,seen)values(?,?,?,?,?,?,?)',e,bcrypt.hashSync(password,12),age|0,auto,auto?null:vt,now(),now());
@@ -34,7 +34,7 @@ A.post('/api/register',lim(60,10),(q,s)=>{const{email,password,age}=q.body,e=Str
 A.get('/api/verify',(q,s)=>{const r=run("update users set ver=1,vt=null where vt=? and vt not like 'r%'",String(q.query.t||''));s.send(r.changes?'Email подтверждён. Можно вернуться на сайт.':'Ссылка недействительна')});
 A.post('/api/login',lim(15,10),(q,s)=>{const u=q1('select * from users where email=?',String(q.body.email||'').toLowerCase().trim());
  if(!u||!bcrypt.compareSync(String(q.body.password||''),u.hash))return s.status(401).json({e:'Неверный email или пароль'});
- if(u.ban)return s.status(403).json({e:'Аккаунт заблокирован'});s.json({token:jwt.sign({id:u.id},SECRET,{expiresIn:'7d'})})});
+ if(u.ban)return s.status(403).json({e:'Аккаунт заблокирован'});if(u.age<18&&u.email!==OWNER)return s.status(403).json({e:'SferaDating доступна только с 18 лет'});s.json({token:jwt.sign({id:u.id},SECRET,{expiresIn:'7d'})})});
 A.post('/api/forgot',lim(15,5),(q,s)=>{const t='r'+crypto.randomBytes(24).toString('hex');run('update users set vt=? where email=?',t,String(q.body.email||'').toLowerCase());send(String(q.body.email||'').toLowerCase(),'Сброс пароля SferaDating','Ссылка для сброса: '+`${BASE}/?reset=${t}`);s.json({ok:1})});
 A.post('/api/reset',lim(15,5),(q,s)=>{if(String(q.body.password||'').length<8)return s.status(400).json({e:'Пароль от 8 символов'});const r=run("update users set hash=?,vt=null,ver=1 where vt=? and vt like 'r%'",bcrypt.hashSync(q.body.password,12),String(q.body.t||''));r.changes?s.json({ok:1}):s.status(400).json({e:'Ссылка недействительна'})});
 A.get('/api/me',auth,(q,s)=>{const u=q.u;s.json({id:u.id,email:u.email,age:u.age,role:u.role,ver:u.ver,calls:u.calls,mute:u.mute>now(),hasProfile:!!q1('select 1 x from prof where uid=?',u.id),profile:q1('select * from prof where uid=?',u.id)})});
